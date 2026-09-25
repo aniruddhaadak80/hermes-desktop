@@ -34,6 +34,33 @@ interface RecentSession {
 // ChatGPT-style paged conversation list under the pinned app navigation.
 export const RECENT_SESSIONS_PAGE_SIZE = 30;
 
+// @lat: [[sidebar-navigation#Provisional fresh sessions#Live first-turn rows]]
+/**
+ * True when the open conversation belongs to a run that is still generating
+ * and the loaded page has no row for it, so its refresh must skip the
+ * throttle.
+ *
+ * A run's session id is revealed the moment the agent produces its first
+ * visible token, reasoning, or tool call, so the sidebar can be showing a
+ * chat it cannot list yet. The refresh that would pick the row up is normally
+ * throttled, and the click that opened "New Chat" usually still sits inside
+ * that window, which is what kept a new conversation out of the list for the
+ * rest of its first run (issue #980).
+ *
+ * The live-run requirement is what keeps an older resumed conversation out of
+ * it: such a session is also missing from the loaded page, simply because it
+ * sits past the first rows, and forcing a full sync for every switch into one
+ * would defeat the throttle the cache read exists to respect.
+ */
+export function needsForcedSessionSync(
+  sessionId: string | null,
+  listed: ReadonlyArray<{ id: string }>,
+  liveSessionIds: ReadonlySet<string>,
+): boolean {
+  if (!sessionId || !liveSessionIds.has(sessionId)) return false;
+  return !listed.some((row) => row.id === sessionId);
+}
+
 // Re-sync cadence while the list is visible. Deliberately slower than the
 // Sessions screen (30s) — the sidebar is always on screen, so this interval
 // runs for the whole app lifetime when the section is expanded.
@@ -318,6 +345,15 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
     [normalizeRows],
   );
 
+  // A conversation whose first run is still generating can be missing from the
+  // loaded page; that is the one case the refresh throttle below must not
+  // swallow.
+  const forceSessionSync = useMemo(
+    () =>
+      needsForcedSessionSync(currentSessionId, sessions, loadingSessionIds),
+    [currentSessionId, loadingSessionIds, sessions],
+  );
+
   const refresh = useCallback(
     async (force = false): Promise<void> => {
       const now = Date.now();
@@ -450,9 +486,14 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
   // Resuming/switching sessions reorders recency — refresh (throttled).
   // Also refreshes when going to "New Chat" (currentSessionId becomes null)
   // so the just-left session appears in the list immediately.
+  //
+  // A live run with no loaded row skips the throttle: the click that opened
+  // "New Chat" is usually still inside the 5s window, so a throttled refresh
+  // here is dropped and the new row stays invisible until the 60s poll (issue
+  // #980). Every other session switch stays throttled.
   useEffect(() => {
-    if (open) void refresh();
-  }, [open, currentSessionId, refresh]);
+    if (open) void refresh(forceSessionSync);
+  }, [forceSessionSync, open, currentSessionId, refresh]);
 
   // Switching agent points the list at a different profile's DB. Force a
   // reload immediately (bypassing the throttle) so the list isn't stale.

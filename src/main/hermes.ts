@@ -2181,6 +2181,23 @@ async function sendMessageViaTuiGateway(
   // answer. Cleared on turn end so an abandoned turn leaks no stale resolver.
   let pendingClarifyId: string | null = null;
   const pendingApprovalIds = new Set<string>();
+  let announcedSessionId = "";
+
+  // @lat: [[sidebar-navigation#Provisional fresh sessions#Live first-turn rows]]
+  //
+  // First real turn activity (visible text, reasoning, or a tool event) is
+  // also the moment a fresh session id stops being provisional, exactly as
+  // in sendMessageViaApi. Announcing here instead of waiting for finish() is
+  // what puts a still-running first turn on the sidebar list (#980), while a
+  // turn that dies before producing anything still leaves no row behind. The
+  // stored id is announced because that is the one finish() reports and the
+  // one state.db (and therefore the session cache) is keyed by.
+  function noteGatewayActivity(): void {
+    hasGatewayOutput = true;
+    if (!storedSessionId || announcedSessionId === storedSessionId) return;
+    announcedSessionId = storedSessionId;
+    cb.onSessionStarted?.(storedSessionId);
+  }
 
   function clearApprovals(): void {
     for (const requestId of pendingApprovalIds) {
@@ -2274,21 +2291,21 @@ async function sendMessageViaTuiGateway(
     const delta = gatewayMessageDelta(event);
     if (delta) {
       streamedText += delta;
-      hasGatewayOutput = true;
+      noteGatewayActivity();
       cb.onChunk(delta);
       return;
     }
 
     const reasoning = gatewayReasoningText(event);
     if (reasoning && cb.onReasoningChunk) {
-      hasGatewayOutput = true;
+      noteGatewayActivity();
       cb.onReasoningChunk(reasoning);
       return;
     }
 
     const toolEvent = gatewayToolEvent(event);
     if (toolEvent) {
-      hasGatewayOutput = true;
+      noteGatewayActivity();
       if (cb.onToolEvent) {
         cb.onToolEvent(toolEvent);
       } else if (cb.onToolProgress) {
