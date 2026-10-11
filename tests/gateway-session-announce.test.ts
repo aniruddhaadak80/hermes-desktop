@@ -213,7 +213,11 @@ beforeEach(() => {
   transport.respond.mockReset();
   transport.respond.mockImplementation((method: string) =>
     method === "session.create"
-      ? { session_id: LIVE_SESSION, stored_session_id: STORED_SESSION, info: {} }
+      ? {
+          session_id: LIVE_SESSION,
+          stored_session_id: STORED_SESSION,
+          info: {},
+        }
       : {},
   );
 });

@@ -229,3 +229,9 @@ A new session receives an immediate sidebar sync even when its announcement and 
 ### Bounded forced refresh
 
 The sidebar consumes each session's immediate-sync attempt before starting it. A missing or deleted row cannot trigger repeated forced reads on tab switches; ordinary focus and polling can retry later. Changing connection or profile resets the scope.
+
+## Configuration health details
+
+The warning banner opens the existing About health report for its profile. Explicit details navigation remains visible while loading, after a clean audit, or when an audit fails.
+
+[[src/renderer/src/components/ConfigHealthBanner.tsx#ConfigHealthBanner]] calls the settings callback with `diagnose`, never the click event. [[src/renderer/src/components/settings/SettingsModal.tsx#resolveSection]] aliases `diagnose` to About and rejects non-string section values. [[src/renderer/src/components/settings/AboutPane.tsx]] passes the settings profile into [[src/renderer/src/screens/Settings/ConfigHealth.tsx#ConfigHealth]]. Normal About navigation retains its quiet healthy state. The details view exposes audit retry, serializes audit/fix operations, and invalidates outstanding work on profile changes or unmount. Coverage: [[config-health-navigation]].
