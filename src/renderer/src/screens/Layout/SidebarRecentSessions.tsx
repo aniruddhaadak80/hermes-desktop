@@ -36,9 +36,8 @@ export const RECENT_SESSIONS_PAGE_SIZE = 30;
 
 // @lat: [[sidebar-navigation#Provisional fresh sessions#Live first-turn rows]]
 /**
- * True when the open conversation belongs to a run that is still generating
- * and the loaded page has no row for it, so its refresh must skip the
- * throttle.
+ * A missing live or newly-created session receives one unthrottled sync in
+ * its connection/profile scope, even if generation already completed.
  *
  * A run's session id is revealed the moment the agent produces its first
  * visible token, reasoning, or tool call, so the sidebar can be showing a
@@ -47,17 +46,24 @@ export const RECENT_SESSIONS_PAGE_SIZE = 30;
  * that window, which is what kept a new conversation out of the list for the
  * rest of its first run (issue #980).
  *
- * The live-run requirement is what keeps an older resumed conversation out of
- * it: such a session is also missing from the loaded page, simply because it
- * sits past the first rows, and forcing a full sync for every switch into one
- * would defeat the throttle the cache read exists to respect.
+ * Completed newly-created runs retain their identity independently of loading.
+ * Older resumed conversations past the loaded page stay throttled, and a row
+ * that remains absent after one attempt falls back to the normal polling.
  */
 export function needsForcedSessionSync(
   sessionId: string | null,
   listed: ReadonlyArray<{ id: string }>,
   liveSessionIds: ReadonlySet<string>,
+  createdSessionIds?: ReadonlySet<string>,
+  attemptedSessionIds?: ReadonlySet<string>,
 ): boolean {
-  if (!sessionId || !liveSessionIds.has(sessionId)) return false;
+  if (
+    !sessionId ||
+    attemptedSessionIds?.has(sessionId) ||
+    (!liveSessionIds.has(sessionId) && !createdSessionIds?.has(sessionId))
+  ) {
+    return false;
+  }
   return !listed.some((row) => row.id === sessionId);
 }
 
@@ -191,6 +197,7 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
   activeProfile,
   currentSessionId,
   loadingSessionIds,
+  createdSessionIds,
   resumingSessionId,
   onSelect,
   onSessionDeleted,
@@ -204,6 +211,8 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
   currentSessionId: string | null;
   /** Session ids of every run currently generating (multiple run at once). */
   loadingSessionIds: Set<string>;
+  /** Scoped sessions created here, including first turns already completed. */
+  createdSessionIds?: ReadonlySet<string>;
   /** A session whose history is being fetched for resume (transient spinner). */
   resumingSessionId: string | null;
   onSelect: (sessionId: string) => void;
@@ -249,6 +258,10 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const lastRefreshRef = useRef(0);
+  const forcedSessionSyncsRef = useRef({
+    scope: renameContext,
+    sessionIds: new Set<string>(),
+  });
   const sessionsRef = useRef<RecentSession[]>([]);
   const hasMoreRef = useRef(false);
   const loadingMoreRef = useRef(false);
@@ -345,13 +358,25 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
     [normalizeRows],
   );
 
-  // A conversation whose first run is still generating can be missing from the
-  // loaded page; that is the one case the refresh throttle below must not
-  // swallow.
+  // Loading may already be false when React batches a fast first turn.
   const forceSessionSync = useMemo(
     () =>
-      needsForcedSessionSync(currentSessionId, sessions, loadingSessionIds),
-    [currentSessionId, loadingSessionIds, sessions],
+      needsForcedSessionSync(
+        currentSessionId,
+        sessions,
+        loadingSessionIds,
+        createdSessionIds,
+        forcedSessionSyncsRef.current.scope === renameContext
+          ? forcedSessionSyncsRef.current.sessionIds
+          : undefined,
+      ),
+    [
+      currentSessionId,
+      loadingSessionIds,
+      createdSessionIds,
+      sessions,
+      renameContext,
+    ],
   );
 
   const refresh = useCallback(
@@ -487,13 +512,28 @@ const SidebarRecentSessions = memo(function SidebarRecentSessions({
   // Also refreshes when going to "New Chat" (currentSessionId becomes null)
   // so the just-left session appears in the list immediately.
   //
-  // A live run with no loaded row skips the throttle: the click that opened
+  // A new or live run with no loaded row skips the throttle: the click that opened
   // "New Chat" is usually still inside the 5s window, so a throttled refresh
   // here is dropped and the new row stays invisible until the 60s poll (issue
-  // #980). Every other session switch stays throttled.
+  // #980). Consume the attempt before starting it so a permanently absent or
+  // deleted row cannot cause repeated forced reads when switching tabs.
   useEffect(() => {
-    if (open) void refresh(forceSessionSync);
-  }, [forceSessionSync, open, currentSessionId, refresh]);
+    if (!open) return;
+    if (forcedSessionSyncsRef.current.scope !== renameContext) {
+      forcedSessionSyncsRef.current = {
+        scope: renameContext,
+        sessionIds: new Set<string>(),
+      };
+    }
+    const force =
+      forceSessionSync &&
+      !!currentSessionId &&
+      !forcedSessionSyncsRef.current.sessionIds.has(currentSessionId);
+    if (force && currentSessionId) {
+      forcedSessionSyncsRef.current.sessionIds.add(currentSessionId);
+    }
+    void refresh(force);
+  }, [forceSessionSync, open, currentSessionId, refresh, renameContext]);
 
   // Switching agent points the list at a different profile's DB. Force a
   // reload immediately (bypassing the throttle) so the list isn't stale.

@@ -53,12 +53,12 @@ afterEach(() => {
 describe("needsForcedSessionSync", () => {
   it("holds only for a live run whose session has no loaded row", () => {
     expect(needsForcedSessionSync("s1", [], new Set(["s1"]))).toBe(true);
-    expect(
-      needsForcedSessionSync("s1", [{ id: "s0" }], new Set(["s1"])),
-    ).toBe(true);
-    expect(
-      needsForcedSessionSync("s1", [{ id: "s1" }], new Set(["s1"])),
-    ).toBe(false);
+    expect(needsForcedSessionSync("s1", [{ id: "s0" }], new Set(["s1"]))).toBe(
+      true,
+    );
+    expect(needsForcedSessionSync("s1", [{ id: "s1" }], new Set(["s1"]))).toBe(
+      false,
+    );
   });
 
   it("does not hold for a resumed session that is simply past the loaded page", () => {
@@ -67,6 +67,19 @@ describe("needsForcedSessionSync", () => {
 
   it("does not hold without an open conversation", () => {
     expect(needsForcedSessionSync(null, [], new Set(["s1"]))).toBe(false);
+  });
+
+  // @lat: [[sidebar-navigation#Provisional fresh sessions#Bounded forced refresh]]
+  it("does not force another read for an already attempted missing row", () => {
+    expect(
+      needsForcedSessionSync(
+        "s1",
+        [],
+        new Set(["s1"]),
+        new Set(["s1"]),
+        new Set(["s1"]),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -92,7 +105,11 @@ describe("sidebar session cache sync (#980)", () => {
     // The gateway hands out the session id and the first user message is stored,
     // so the forced sync finds a titled row.
     cached = [
-      { id: "session-new", title: "Look at the capabilities", contextFolder: null },
+      {
+        id: "session-new",
+        title: "Look at the capabilities",
+        contextFolder: null,
+      },
     ];
     rerender(
       <SidebarRecentSessions
@@ -133,6 +150,64 @@ describe("sidebar session cache sync (#980)", () => {
     );
 
     expect(api.syncSessionCache.mock.calls.length).toBe(atMount);
+  });
+
+  // @lat: [[sidebar-navigation#Provisional fresh sessions#Fast first-turn completion]]
+  it("lists a newly created session when its first turn completes before rendering", async () => {
+    const api = installHermesAPI();
+    let cached: CachedRow[] = [];
+    api.syncSessionCache.mockImplementation(() => Promise.resolve(cached));
+    const { rerender } = render(
+      <SidebarRecentSessions
+        {...baseProps}
+        currentSessionId={null}
+        loadingSessionIds={new Set()}
+        createdSessionIds={new Set()}
+      />,
+    );
+    await act(async () => {});
+    const atMount = api.syncSessionCache.mock.calls.length;
+
+    cached = [
+      { id: "fast-session", title: "Quick answer", contextFolder: null },
+    ];
+    // React can batch session announcement and completion into this render,
+    // leaving no intermediate loading session for the sidebar to observe.
+    rerender(
+      <SidebarRecentSessions
+        {...baseProps}
+        currentSessionId="fast-session"
+        loadingSessionIds={new Set()}
+        createdSessionIds={new Set(["fast-session"])}
+      />,
+    );
+    expect(await screen.findByText("Quick answer")).toBeVisible();
+    expect(api.syncSessionCache.mock.calls.length).toBe(atMount + 1);
+  });
+
+  it("does not repeatedly force a permanently absent created row when switching tabs", async () => {
+    const api = installHermesAPI();
+    const props = {
+      ...baseProps,
+      loadingSessionIds: new Set<string>(),
+      createdSessionIds: new Set(["missing-session"]),
+    };
+    const { rerender } = render(
+      <SidebarRecentSessions {...props} currentSessionId={null} />,
+    );
+    await act(async () => {});
+    const atMount = api.syncSessionCache.mock.calls.length;
+    rerender(
+      <SidebarRecentSessions {...props} currentSessionId="missing-session" />,
+    );
+    await act(async () => {});
+    expect(api.syncSessionCache.mock.calls.length).toBe(atMount + 1);
+    rerender(<SidebarRecentSessions {...props} currentSessionId={null} />);
+    rerender(
+      <SidebarRecentSessions {...props} currentSessionId="missing-session" />,
+    );
+    await act(async () => {});
+    expect(api.syncSessionCache.mock.calls.length).toBe(atMount + 1);
   });
 
   it("keeps the throttle when resuming a session past the loaded page", async () => {

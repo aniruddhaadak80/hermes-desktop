@@ -214,6 +214,18 @@ The gateway transport now un-provisions a fresh session id at that same moment, 
 
 [[src/main/hermes.ts#sendMessageViaTuiGateway]] funnels the three signals that mean the turn is really under way (a message delta, a reasoning delta, and a tool event) through one helper that both records that output was seen and announces the stored session id. The stored id is the one announced because it is what `finish` reports and what `state.db` is keyed by, so the renderer and the session cache agree on which row to create.
 
-[[src/renderer/src/screens/Layout/SidebarRecentSessions.tsx#needsForcedSessionSync]] reports an open conversation that belongs to a run still generating and has no loaded row, and the refresh that normally follows a session switch skips the throttle for exactly that case: the click that opened "New Chat" is usually still inside the five-second window, so a throttled refresh is dropped and the new row stays invisible until the sixty-second poll. The live-run requirement keeps older conversations out of it, since a resumed session is equally absent from the loaded page but must not turn every switch into a full `state.db` read. Every other refresh stays throttled.
+[[src/renderer/src/screens/Layout/SidebarRecentSessions.tsx#needsForcedSessionSync]] grants one immediate sync to an unlisted live or newly-created session in the selected connection and profile. Created identity survives completion, so a batched fast first turn cannot lose its refresh. Existing resumed conversations beyond the loaded page retain the normal throttle.
 
 [[src/renderer/src/screens/Layout/SidebarRecentSessions.test.tsx]] locks both directions (a live run with no loaded row forces an immediate sync and the row then renders; a listed or merely unlisted resumed session does not), and [[tests/gateway-session-announce.test.ts]] covers the gateway announcing once, on first activity rather than at session creation.
+
+### Fast first-turn completion
+
+A new session receives an immediate sidebar sync even when its announcement and completion are batched into one render with no loading session left.
+
+### Created-session scope
+
+[[src/renderer/src/screens/Layout/chatRuns.ts#createdSessionIds]] retains completed new runs only for their connection and profile. Resumed runs carry a history seed, including an empty transcript, and never enter this set.
+
+### Bounded forced refresh
+
+The sidebar consumes each session's immediate-sync attempt before starting it. A missing or deleted row cannot trigger repeated forced reads on tab switches; ordinary focus and polling can retry later. Changing connection or profile resets the scope.
